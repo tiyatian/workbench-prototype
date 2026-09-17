@@ -1,0 +1,74 @@
+/* Shared local records used by Assets and DS Studio. */
+window.DSData = (() => {
+  const id=()=>crypto.randomUUID();
+  const open=(name,store)=>new Promise((resolve,reject)=>{const r=indexedDB.open(name,1);r.onupgradeneeded=()=>r.result.createObjectStore(store);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)});
+  async function read(name,store,key){const db=await open(name,store);return new Promise((resolve,reject)=>{const tx=db.transaction(store),r=tx.objectStore(store).get(key);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);tx.oncomplete=()=>db.close()})}
+  async function change(name,store,key,fn){const db=await open(name,store);return new Promise((resolve,reject)=>{const tx=db.transaction(store,'readwrite'),s=tx.objectStore(store),r=s.get(key);let result,failure;r.onsuccess=()=>{try{result=fn(r.result);s.put(result,key)}catch(error){failure=error;tx.abort()}};tx.oncomplete=()=>{db.close();resolve(result)};tx.onabort=tx.onerror=()=>{db.close();reject(failure||tx.error||Error('本机保存失败'))}})}
+  const getLibrary=()=>read('workbench-ds-studio','state','library');
+  const upsert=d=>change('workbench-ds-studio','state','library',s=>{s=s||{schema:1,documents:[]};const i=s.documents.findIndex(x=>x.id===d.id);if(i<0)s.documents.push(d);else s.documents[i]=d;return s});
+  const rename=(id,name)=>change('workbench-ds-studio','state','library',s=>{name=String(name).trim();if(!name||name.length>120)throw Error('DS 名称需要为 1–120 个字符');const d=s?.documents.find(d=>d.id===id);if(!d)throw Error('这套 DS 已不存在，请刷新列表');d.name=name;d.modified=Date.now();d.revision=(d.revision||0)+1;return s});
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  // Merge only local edits. A stale editor must not replace another tab's library.
+  const commit=(snapshot,baseline)=>change('workbench-ds-studio','state','library',s=>{
+    s=s||{schema:1,documents:[]};const before=new Map(baseline.map(d=>[d.id,d]));
+    for(const local of snapshot.documents){const base=before.get(local.id),index=s.documents.findIndex(d=>d.id===local.id),remote=s.documents[index];
+      if(!base){if(!remote)s.documents.push(local);else if(!same(remote,local))throw Error('DS 已被其他页面修改，请导出备份后重新打开');continue}
+      if(same(base,local))continue;
+      if(!remote)throw Error('这套 DS 已在其他页面删除，请导出备份保留当前编辑');
+      const merged={...remote};
+      for(const key of new Set([...Object.keys(base),...Object.keys(local)])){
+        if(['modified','revision'].includes(key)||same(local[key],base[key]))continue;
+        if(!same(remote[key],base[key])&&!same(remote[key],local[key]))throw Error('同一内容已在其他页面修改，请导出备份后重新打开');
+        if(Object.hasOwn(local,key))merged[key]=local[key];else delete merged[key];
+      }
+      merged.modified=Math.max(remote.modified||0,local.modified||0);merged.revision=Math.max(remote.revision||0,local.revision||0);s.documents[index]=merged;
+    }
+    for(const base of baseline){if(snapshot.documents.some(d=>d.id===base.id))continue;const remote=s.documents.find(d=>d.id===base.id);if(remote&&!same(remote,base))throw Error('DS 已在其他页面修改，删除未保存');s.documents=s.documents.filter(d=>d.id!==base.id)}
+    s.current=snapshot.current;s.boardId=snapshot.boardId;return s;
+  });
+  const files=async()=>await read('workbench-user-assets','files','all')||[];
+  const folders=async()=>await read('workbench-user-assets','files','folders')||[];
+  const createFolder=name=>change('workbench-user-assets','files','folders',list=>{list=list||[];name=name.trim();if(!name||name.length>80)throw Error('文件夹名称需要为 1–80 个字符');if(list.some(f=>f.name===name))throw Error('文件夹名称已存在');return [...list,{id:id(),name,created:Date.now()}]});
+  const updateFiles=fn=>change('workbench-user-assets','files','all',s=>fn(s||[]));
+  const canvasProjects=async()=>await read('workbench-canvas-projects','state','projects')||[];
+  const updateCanvas=fn=>change('workbench-canvas-projects','state','projects',list=>fn(list||[]));
+  async function createCanvas(input){const options=typeof input==='object'&&input!==null?input:{dsId:input},dsId=options.dsId;const ds=dsId?(await getLibrary())?.documents.find(d=>d.id===dsId&&d.kind!=='material'):null;if(dsId&&!ds)throw Error('这套 DS 已不存在，请重新选择');const project={id:id(),name:'New Project',created:Date.now(),modified:Date.now(),bindings:{},activeBinding:null,requests:[],versions:[],currentVersion:null,source:options.source||'project',assets:structuredClone(options.assets||[]),outputSpec:options.outputSpec||null,draft:options.prompt||'',reference:options.reference||null};if(ds){project.activeBinding=id();project.bindings[project.activeBinding]=structuredClone(ds)}await updateCanvas(list=>{project.name=options.name||'New Project '+(list.length+1);return [...list,project]});return project}
+  async function bindCanvas(projectId,dsId){const ds=(await getLibrary())?.documents.find(d=>d.id===dsId&&d.kind!=='material');if(!ds)throw Error('这套 DS 已不存在，请重新选择');let result;await updateCanvas(list=>{result=list.find(p=>p.id===projectId);if(!result)throw Error('画布已不存在');const key=id();result.bindings[key]=structuredClone(ds);result.activeBinding=key;result.modified=Date.now();return list});return result}
+  async function submitCanvas(projectId,prompt,context={}){if(!prompt.trim())throw Error('请先描述设计需求');return mutateCanvas(projectId,p=>{p.requests.push({id:id(),prompt:prompt.trim(),created:Date.now(),designSystemKey:p.activeBinding,status:'awaiting-api',references:structuredClone(context.references||[]),region:context.region||null,parentVersion:context.parentVersion||p.currentVersion||null});p.draft=''})}
+  function canvasRequestContext(project,request){const ds=project.bindings[request.designSystemKey];return {prompt:request.prompt,projectId:project.id,designSystem:ds?structuredClone(ds):null,outputSpec:project.outputSpec||null,references:structuredClone(request.references||[]),region:request.region||null,parentVersion:request.parentVersion||null}}
+  async function mutateCanvas(projectId,fn){let result;await updateCanvas(list=>{result=list.find(p=>p.id===projectId);if(!result)throw Error('画布已不存在');result.versions||=[];result.assets||=[];fn(result);result.modified=Date.now();return list});return result}
+  const patchCanvas=(projectId,patch)=>mutateCanvas(projectId,p=>{for(const key of ['draft','assets','currentVersion','viewMode','chatOpen','chatMode','uPosition','historyCollapsed'])if(Object.hasOwn(patch,key))p[key]=structuredClone(patch[key])});
+  // Keep folder creation and file insertion atomic; existing library items retain their location.
+  async function saveProjectAssets(project,assets){
+    const prepared=[];
+    for(const a of assets){let blob=a.blob;if(!blob&&a.preview?.startsWith('data:image/'))blob=await (await fetch(a.preview)).blob();if(blob)prepared.push({...a,blob})}
+    if(!prepared.length)return 0;
+    const db=await open('workbench-user-assets','files');
+    return new Promise((resolve,reject)=>{const tx=db.transaction('files','readwrite'),s=tx.objectStore('files'),fr=s.get('folders'),ar=s.get('all');let count=0;
+      ar.onsuccess=()=>{const files=ar.result||[],folders=fr.result||[],fresh=prepared.filter(a=>!files.some(f=>f.id===a.id));count=fresh.length;if(!count)return;
+        let folder=folders.find(f=>f.projectId===project.id);if(!folder){folder={id:id(),name:project.name+' · 项目素材',projectId:project.id,created:Date.now()};folders.push(folder)}
+        s.put(folders,'folders');s.put([...files,...fresh.map(a=>({...a,folderId:folder.id,projectId:project.id,created:a.created||Date.now()}))],'all')};
+      tx.oncomplete=()=>{db.close();resolve(count)};tx.onabort=tx.onerror=()=>{db.close();reject(tx.error||Error('素材保存失败，请重试'))};
+    });
+  }
+  const saveFeedback=record=>change('workbench-canvas-projects','state','feedback',list=>[...(list||[]),{...structuredClone(record),id:id(),created:Date.now()}]);
+  const keepCanvasVersion=(projectId,versionId)=>mutateCanvas(projectId,p=>{const v=p.versions.find(v=>v.id===versionId);if(!v||!['concept','ready'].includes(v.status))throw Error('当前作品尚不可保留');v.kept=true;v.keptAt=Date.now()});
+  const addCanvasAssets=(projectId,assets)=>mutateCanvas(projectId,p=>{for(const asset of assets)if(!p.assets.some(a=>a.id===asset.id))p.assets.push(structuredClone(asset))});
+  async function beginCanvasVersion(projectId,{prompt,demo=false,references=[],region=null,parentVersion}={}){return mutateCanvas(projectId,p=>{if(p.versions.some(v=>['generating','converting'].includes(v.status)))throw Error('已有生成任务，请先等待或取消');const v={id:id(),number:p.versions.length+1,created:Date.now(),parentVersion:parentVersion===undefined?p.currentVersion:parentVersion,designSystemKey:p.activeBinding,prompt:prompt||'预制包装设计演示',references:structuredClone(references),region:structuredClone(region),demo,status:demo?'generating':'awaiting-api',phase:'concept'};p.versions.push(v);p.currentVersion=v.id;p.draft='';p.requests.push({id:id(),versionId:v.id,prompt:v.prompt,created:v.created,designSystemKey:v.designSystemKey,status:v.status,references:v.references,region:v.region,parentVersion:v.parentVersion})})}
+  // Compare expected status so cancelled or superseded jobs cannot commit late results.
+  const transitionCanvasVersion=(projectId,versionId,expected,patch)=>mutateCanvas(projectId,p=>{const v=p.versions.find(v=>v.id===versionId);if(!v||v.status!==expected)throw Error('任务状态已改变');Object.assign(v,structuredClone(patch));const r=p.requests.find(r=>r.versionId===v.id);if(r)r.status=v.status});
+  const interruptCanvas=(projectId)=>mutateCanvas(projectId,p=>{p.versions.forEach(v=>{if(['generating','converting'].includes(v.status)){v.resumePhase=v.phase;v.status='interrupted';const r=p.requests.find(r=>r.versionId===v.id);if(r)r.status=v.status}})});
+  const removeDS=ids=>change('workbench-ds-studio','state','library',s=>{if(s)s.documents=s.documents.filter(d=>!ids.includes(d.id));return s});
+  const renameFolder=(id,name)=>change('workbench-user-assets','files','folders',list=>{name=name.trim();if(!name||name.length>80)throw Error('文件夹名称需要为 1–80 个字符');if(list.some(f=>f.id!==id&&f.name===name))throw Error('文件夹名称已存在');return list.map(f=>f.id===id?{...f,name}:f)});
+  // Delete folders and their members in the same transaction to avoid orphaned files.
+  async function removeAssets(ids){const db=await open('workbench-user-assets','files');return new Promise((resolve,reject)=>{const tx=db.transaction('files','readwrite'),store=tx.objectStore('files'),a=store.get('all'),b=store.get('folders');let files,folders;const finish=()=>{if(!files||!folders)return;store.put(files.filter(r=>!ids.includes(r.id)&&!ids.includes(r.folderId)),'all');store.put(folders.filter(f=>!ids.includes(f.id)),'folders')};a.onsuccess=()=>{files=a.result||[];finish()};b.onsuccess=()=>{folders=b.result||[];finish()};tx.oncomplete=()=>{db.close();resolve()};tx.onabort=tx.onerror=()=>{db.close();reject(tx.error||Error('删除失败，请重试'))}})}
+  const node=(type,props={})=>({id:id(),type,x:60,y:60,w:600,h:100,fill:'ink',font:'heading',size:40,weight:500,text:'',opacity:1,radius:0,hidden:false,locked:false,...props});
+  const board=(name,w=1200,h=850)=>({id:id(),name,w,h,background:'background',nodes:[]});
+  function make(name,palette,source={}){const d={id:id(),name,kind:'ds',created:Date.now(),modified:Date.now(),revision:1,tokens:{primary:palette[0]||'#171717',secondary:palette[1]||'#808080',ink:'#171717',background:'#ffffff',muted:palette[2]||'#eeeeee',heading:'Arial',body:'Arial',radius:0},assets:{},boards:[],source};const b=board('01 / 视觉风格');b.nodes.push(node('text',{x:60,y:50,w:1080,h:95,text:name,size:58,weight:600}),node('text',{x:62,y:158,w:1040,h:60,text:'VISUAL IDENTITY / DESIGN SYSTEM',size:18,font:'body'}));palette.slice(0,5).forEach((color,i)=>{b.nodes.push(node('rect',{x:60+i*218,y:335,w:200,h:245,fill:color}),node('text',{x:60+i*218,y:610,w:200,h:40,text:color.toUpperCase(),size:20,font:'body'}))});b.nodes.push(node('text',{x:60,y:745,w:1080,h:45,text:'COLOR / TYPE / COMPOSITION',size:16,font:'body'}));d.boards.push(b);return d}
+  function imageAsset(d,image,name){const key=id();d.assets[key]={name,width:image.width,height:image.height,data:image.data};return key}
+  function referenceBoard(d,image,name){const key=imageAsset(d,image,name),b=board('02 / 原稿参考');const scale=Math.min(1080/image.width,720/image.height);b.nodes.push(node('image',{asset:key,x:(1200-image.width*scale)/2,y:60,w:image.width*scale,h:image.height*scale}));d.boards.push(b);return key}
+  const loadImage=data=>new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(Error('图片无法读取，请换用 PNG、JPG 或 WebP'));img.src=data});
+  async function analyzeImage(blob){const url=URL.createObjectURL(blob);try{const img=await loadImage(url),scale=Math.min(1,2000/Math.max(img.width,img.height)),canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);const sample=document.createElement('canvas');sample.width=100;sample.height=100;const ctx=sample.getContext('2d');ctx.drawImage(img,0,0,100,100);const pixels=ctx.getImageData(0,0,100,100).data,bins=new Map();for(let i=0;i<pixels.length;i+=4){if(pixels[i+3]<180)continue;const rgb=[pixels[i],pixels[i+1],pixels[i+2]],key=rgb.map(v=>Math.round(v/24)).join(',');const item=bins.get(key)||{sum:[0,0,0],count:0};rgb.forEach((v,j)=>item.sum[j]+=v);item.count++;bins.set(key,item)}const palette=[];for(const b of [...bins.values()].sort((a,b)=>b.count-a.count)){const rgb=b.sum.map(v=>Math.round(v/b.count));if(palette.some(p=>p.rgb.reduce((a,v,i)=>a+(v-rgb[i])**2,0)<1600))continue;palette.push({rgb,color:'#'+rgb.map(v=>v.toString(16).padStart(2,'0')).join(''),ratio:b.count/10000});if(palette.length===5)break}if(!palette.length)throw Error('图片没有可提取的不透明像素');return {data:canvas.toDataURL('image/png'),width:canvas.width,height:canvas.height,palette:palette.map(p=>p.color),evidence:palette.map(p=>({color:p.color,sampleRatio:p.ratio}))}}finally{URL.revokeObjectURL(url)}}
+  async function seed(){await change('workbench-ds-studio','state','library',s=>{s=s||{schema:1,documents:[]};if(window.HEYTEA_DS&&!s.seededHeytea){s.documents.push(structuredClone(window.HEYTEA_DS));s.seededHeytea=true}if(window.CURATED_VI&&!s.seededCuratedVI){if(!s.documents.some(d=>d.id===window.CURATED_VI.id))s.documents.push(structuredClone(window.CURATED_VI));s.seededCuratedVI=true}return s})}
+  return {id,node,board,make,imageAsset,referenceBoard,loadImage,analyzeImage,getLibrary,upsert,rename,commit,files,folders,createFolder,updateFiles,removeDS,renameFolder,removeAssets,canvasProjects,createCanvas,bindCanvas,submitCanvas,canvasRequestContext,patchCanvas,addCanvasAssets,beginCanvasVersion,transitionCanvasVersion,interruptCanvas,saveProjectAssets,saveFeedback,keepCanvasVersion,seed};
+})();

@@ -1,0 +1,18 @@
+(() => {
+const D=window.DSData;
+D.buildVI=function(d){
+  if(d.vi)return d;
+  const original=d.boards,reference=Object.keys(d.assets)[0],name=d.name.replace(/\s*· DS$/,'');
+  d.layout=d.layout||{columns:2,margin:60,gap:32,headingSize:56,bodySize:22,alignment:'left',imageRatio:0.55};
+  const page=(name,index)=>{const b=D.board(name);b.nodes.push(D.node('text',{x:60,y:34,w:1040,h:32,text:d.name,size:14,font:'body'}),D.node('text',{x:1090,y:34,w:60,h:32,text:String(index).padStart(2,'0'),size:14,font:'body'}),D.node('rect',{x:60,y:78,w:1080,h:1,fill:'muted'}));return b};
+  const text=(b,text,x,y,w,h,size=24,fill='ink')=>b.nodes.push(D.node('text',{text,x,y,w,h,size,fill,font:size>30?'heading':'body'}));
+  const title=(b,t)=>text(b,t,60,115,1080,90,48);
+  const cover=page('01 / 品牌标识',1);title(cover,'Visual Identity');text(cover,name,60,265,1040,160,62);if(d.logo&&d.assets[d.logo])cover.nodes.push(D.node('image',{asset:d.logo,x:60,y:480,w:240,h:210}));else text(cover,'品牌标识 / 待补充',60,520,600,60,24);text(cover,'视觉识别提案 · 基于参考素材整理，非官方品牌规范',60,752,1040,40,16);
+  const colors=page('02 / 色彩系统',2);title(colors,'Color System');['primary','secondary','ink','background','muted'].forEach((key,i)=>{colors.nodes.push(D.node('rect',{x:60+i*220,y:300,w:200,h:270,fill:key}));text(colors,['主色','辅色','文字','背景','中性色'][i],60+i*220,606,200,40,20);text(colors,d.tokens[key].toUpperCase(),60+i*220,661,200,40,18)});text(colors,'色彩角色为建议配置，可根据实际应用调整。',60,758,1050,40,16);
+  const type=page('03 / 字体与层级',3);title(type,'Typography');text(type,'Aa / 品牌标题',60,300,1080,120,d.layout.headingSize);text(type,'以清晰的层级，建立有序的表达。',60,475,1080,75,32);text(type,'正文保持适当行距，以稳定的节奏组织信息，让核心内容更容易被看见。',60,610,1020,90,d.layout.bodySize);text(type,'编辑字体：'+d.tokens.heading+' / '+d.tokens.body+'。原稿准确字体未确认时使用系统替代。',60,758,1060,50,15);
+  const layout=page('04 / 排版规范',4);title(layout,'Layout & Rhythm');const margin=Math.max(30,Math.min(110,d.layout.margin)),gap=Math.max(12,Math.min(60,d.layout.gap)),cols=Math.max(1,Math.min(4,d.layout.columns)),width=(1200-2*margin-gap*(cols-1))/cols;for(let i=0;i<cols;i++)layout.nodes.push(D.node('rect',{x:margin+i*(width+gap),y:300,w:width,h:260,fill:'muted',opacity:.5}));text(layout,cols+' 栏网格 / 边距 '+margin+' / 栏间距 '+gap,60,605,1080,50,25);text(layout,(d.source?.ai?.analysis.layoutRules||['建议统一左对齐，保持稳定的阅读起点。','标题、正文与图片使用一致边距；留白优先于装饰。']).slice(0,3).join('\n'),60,677,1060,120,19);
+  const visual=page('05 / 图形与影像',5);title(visual,'Graphic Language');if(reference){const a=d.assets[reference],scale=Math.min(1040/a.width,490/a.height);visual.nodes.push(D.node('image',{asset:reference,x:(1200-a.width*scale)/2,y:240,w:a.width*scale,h:a.height*scale}))}else{visual.nodes.push(D.node('rect',{x:60,y:300,w:1080,h:340,fill:'muted'}));text(visual,'影像素材 / 待补充',90,420,980,70,36)}text(visual,'保留参考原稿的视觉关系；具体图形规范仍需设计确认。',60,758,1060,40,16);
+  const app=page('06 / 物料延展',6);title(app,'Applications');app.nodes.push(D.node('rect',{x:60,y:265,w:470,h:470,fill:'primary'}));text(app,name,92,300,400,150,38,'background');text(app,'BRAND / POSTER',92,664,390,45,18,'background');app.nodes.push(D.node('rect',{x:574,y:265,w:566,h:210,fill:'muted'}));text(app,name,605,292,500,105,32);text(app,'BUSINESS CARD',605,425,480,35,14);app.nodes.push(D.node('rect',{x:574,y:512,w:566,h:223,fill:'secondary'}));text(app,'A new perspective.',605,548,500,100,38,'background');text(app,'CAMPAIGN / BANNER',605,683,480,32,14,'background');text(app,'建议应用版式：海报 / 名片 / 横幅，不代表现有品牌官方物料。',60,780,1080,35,15);
+  d.boards=[cover,colors,type,layout,visual,app,...original.filter(b=>b.nodes.some(n=>n.type==='image'))];d.vi=true;d.modified=Date.now();return d;
+};
+})();
